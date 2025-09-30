@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>ME Thermal Conductivity Analyzer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 1000px; margin: 20px auto; padding: 0 20px; }
+        .input-section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 8px; }
+        .chart-container { margin: 30px 0; height: 400px; }
+        button { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; margin-right: 10px; }
+        #exportBtn { background: #28a745; } /* Green for export (standard for download) */
+        input { margin: 0 10px; padding: 8px; }
+        .compare-checkbox { margin: 0 5px 0 20px; vertical-align: middle; }
+        .export-note { color: #666; font-size: 0.9em; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Thermal Conductivity Data Analyzer</h1>
+
+    <!-- Step 1: User Input Section (Added Export Button) -->
+    <div class="input-section">
+        <label>1. Upload Lab Data (CSV):</label>
+        <input type="file" id="csvFile" accept=".csv">
+        
+        <br><br>
+        
+        <label>2. Material Thickness (m):</label>
+        <input type="number" id="thickness" step="0.001" min="0.001" value="0.01"> <!-- Default: 1cm -->
+        
+        <br><br>
+        
+        <label>
+            <input type="checkbox" id="compareToStandards" class="compare-checkbox">
+            Compare with standard materials (Al, Cu, Steel)
+        </label>
+        
+        <br><br>
+        
+        <button id="analyzeBtn">Analyze Data</button>
+        <button id="exportBtn" disabled>Export Results (CSV)</button> <!-- Disabled until data is ready -->
+        <p class="export-note">Exports: Time, Avg Temp, Thermal Conductivity (k)</p>
+        
+        <p id="statusText" style="color: green; display: none;">Data analyzed successfully!</p>
+    </div>
+
+    <!-- Step 2: Chart Containers -->
+    <div class="chart-container">
+        <h3>Temperature vs. Time</h3>
+        <div id="tempTimeChart"></div>
+    </div>
+    <div class="chart-container">
+        <h3>Thermal Conductivity vs. Temperature</h3>
+        <div id="kTempChart"></div>
+    </div>
+
+
+    <script>
+        // --------------------------
+        // Core Variables (Added exportBtn)
+        // --------------------------
+        const csvFileInput = document.getElementById('csvFile');
+        const thicknessInput = document.getElementById('thickness');
+        const analyzeBtn = document.getElementById('analyzeBtn');
+        const exportBtn = document.getElementById('exportBtn'); // New
+        const statusText = document.getElementById('statusText');
+        const compareCheckbox = document.getElementById('compareToStandards');
+        let rawData = [];
+        let cleanedData = [];
+        let resultsData = [];
+
+        // --------------------------
+        // Standard Materials Database (Unchanged)
+        // --------------------------
+        const standardMaterials = [
+            {
+                name: "Aluminum (6061)",
+                color: "#ff4757",
+                data: [
+                    { temp: 20, k: 155 }, { temp: 40, k: 160 }, { temp: 60, k: 165 }, { temp: 80, k: 170 }, { temp: 100, k: 175 }
+                ]
+            },
+            {
+                name: "Copper (Pure)",
+                color: "#ffa502",
+                data: [
+                    { temp: 20, k: 401 }, { temp: 40, k: 397 }, { temp: 60, k: 393 }, { temp: 80, k: 389 }, { temp: 100, k: 385 }
+                ]
+            },
+            {
+                name: "Steel (A36)",
+                color: "#2f3542",
+                data: [
+                    { temp: 20, k: 51.9 }, { temp: 40, k: 52.8 }, { temp: 60, k: 53.7 }, { temp: 80, k: 54.6 }, { temp: 100, k: 55.5 }
+                ]
+            }
+        ];
+
+
+        // --------------------------
+        // 1. Load & Parse CSV Data (Unchanged)
+        // --------------------------
+        csvFileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const csvText = event.target.result;
+                const parsed = Papa.parse(csvText, { header: true, dynamicTyping: true });
+                rawData = parsed.data;
+                statusText.style.display = 'none';
+                exportBtn.disabled = true; // Reset export button
+                alert(`Loaded ${rawData.length} rows of data!`);
+            };
+            reader.readAsText(file);
+        });
+
+
+        // --------------------------
+        // 2. Clean Data (Unchanged)
+        // --------------------------
+        function cleanData() {
+            if (rawData.length === 0) return [];
+
+            const temp1Values = rawData.map(row => row['Temp1(°C)']).filter(val => val !== null);
+            const avgTemp1 = temp1Values.reduce((sum, val) => sum + val, 0) / temp1Values.length;
+            const outlierThreshold = avgTemp1 * 5;
+
+            cleanedData = rawData.filter(row => {
+                return row['Time(s)'] > 0 &&
+                       row['Temp1(°C)'] > 0 && row['Temp1(°C)'] < outlierThreshold &&
+                       row['Temp2(°C)'] > 0 && row['Temp2(°C)'] < outlierThreshold &&
+                       row['HeatFlux(W/m²)'] > 0;
+            });
+
+            for (let i = 1; i < cleanedData.length; i++) {
+                const current = cleanedData[i];
+                const prev = cleanedData[i-1];
+                current['Temp1(°C)'] = current['Temp1(°C)'] || prev['Temp1(°C)'];
+                current['Temp2(°C)'] = current['Temp2(°C)'] || prev['Temp2(°C)'];
+            }
+
+            return cleanedData;
+        }
+
+
+        // --------------------------
+        // 3. Calculate Thermal Conductivity (Unchanged)
+        // --------------------------
+        function calculateConductivity() {
+            const thickness = parseFloat(thicknessInput.value);
+            resultsData = [];
+
+            cleanedData.forEach(row => {
+                const time = row['Time(s)'];
+                const temp1 = row['Temp1(°C)'];
+                const temp2 = row['Temp2(°C)'];
+                const heatFlux = row['HeatFlux(W/m²)'];
+                const avgTemp = (temp1 + temp2) / 2;
+
+                const tempDiff = temp2 - temp1;
+                const k = tempDiff !== 0 ? (heatFlux * thickness) / tempDiff : 0;
+
+                resultsData.push({
+                    time: time,
+                    avgTemp: avgTemp.toFixed(2),
+                    k: k.toFixed(2)
+                });
+            });
+
+            return resultsData;
+        }
+
+
+        // --------------------------
+        // 4. Render Charts (Unchanged)
+        // --------------------------
+        function renderCharts() {
+            // Temperature vs. Time Chart
+            const tempTimeTrace1 = {
+                x: resultsData.map(d => d.time),
+                y: cleanedData.map(row => row['Temp1(°C)']), // Use cleaned data for raw temps
+                name: 'Temp 1 (°C)',
+                type: 'scatter',
+                mode: 'lines',
+                line: { color: '#ff7f0e' }
+            };
+            const tempTimeTrace2 = {
+                x: resultsData.map(d => d.time),
+                y: cleanedData.map(row => row['Temp2(°C)']),
+                name: 'Temp 2 (°C)',
+                type: 'scatter',
+                mode: 'lines',
+                line: { color: '#1f77b4' }
+            };
+            Plotly.newPlot('tempTimeChart', [tempTimeTrace1, tempTimeTrace2], {
+                xaxis: { title: 'Time (s)' },
+                yaxis: { title: 'Temperature (°C)' },
+                margin: { t: 20 }
+            });
+
+            // Thermal Conductivity vs. Temperature Chart
+            const traces = [];
+            const userTrace = {
+                x: resultsData.map(d => d.avgTemp),
+                y: resultsData.map(d => d.k),
+                name: 'Your Lab Data',
+                type: 'scatter',
+                mode: 'markers',
+                marker: { color: '#2ca02c', size: 10, symbol: 'circle' }
+            };
+            traces.push(userTrace);
+
+            if (compareCheckbox.checked) {
+                standardMaterials.forEach(material => {
+                    const materialTrace = {
+                        x: material.data.map(d => d.temp),
+                        y: material.data.map(d => d.k),
+                        name: material.name,
+                        type: 'scatter',
+                        mode: 'lines+markers',
+                        line: { color: material.color, width: 2 },
+                        marker: { color: material.color, size: 6 }
+                    };
+                    traces.push(materialTrace);
+                });
+            }
+
+            Plotly.newPlot('kTempChart', traces, {
+                xaxis: { title: 'Average Temperature (°C)', range: [0, 120] },
+                yaxis: { title: 'Thermal Conductivity (W/m·K)' },
+                margin: { t: 20 },
+                legend: { x: 1, y: 1 }
+            });
+        }
+
+
+        // --------------------------
+        // New: 5. Export Results to CSV
+        // --------------------------
+        function exportResults() {
+            if (resultsData.length === 0) return;
+
+            // Step 1: Convert resultsData to CSV format (Papa Parse can unparse JSON to CSV)
+            const csv = Papa.unparse(resultsData, {
+                headers: ['Time(s)', 'Average Temperature(°C)', 'Thermal Conductivity(W/m·K)'] // Clear headers for reports
+            });
+
+            // Step 2: Create a downloadable file
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.setAttribute('href', url);
+            a.setAttribute('download', `Thermal_Conductivity_Results_${new Date().toISOString().slice(0,10)}.csv`); // Name with date
+            a.style.display = 'none';
+            document.body.appendChild(a);
+
+            // Step 3: Trigger download
+            a.click();
+
+            // Step 4: Clean up
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // Add click event to export button
+        exportBtn.addEventListener('click', exportResults);
+
+
+        // --------------------------
+        // 6. Main "Analyze" Button Click (Updated: Enable Export)
+        // --------------------------
+        analyzeBtn.addEventListener('click', () => {
+            if (rawData.length === 0) {
+                alert('First upload a CSV file!');
+                return;
+            }
+
+            cleanData();
+            calculateConductivity();
+            renderCharts();
+
+            statusText.style.display = 'block';
+            exportBtn.disabled = false; // Enable export once analysis is done
+        });
+
+        // Update chart if checkbox is toggled (Unchanged)
+        compareCheckbox.addEventListener('change', () => {
+            if (resultsData.length > 0) {
+                renderCharts();
+            }
+        });
+    </script>
+</body>
+</html>
